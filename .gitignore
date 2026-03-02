@@ -1,0 +1,16 @@
+**/__pycache__
+**/.env
+**/*.csv
+**/*.png
+**/*.json
+**/*.npy
+**/*.pth
+**/*.log
+**/*.h5
+**/wandb
+**/*.jpg
+**/*.pdf
+**/*.pkl
+**/*.npz
+**/*.txt
+**/*.gif
