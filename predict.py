@@ -78,37 +78,45 @@ def get_files(data_list: str):
         
 
 def extract_peak_points(matrix, x_range, y_range, threshold=0.5, sigma=5, is_filt=True, is_gauss=True):
+    """
+    For each channel (column), find the time (row) where the value is max → one time point per channel.
+    matrix: (time, channel) = (H, W). Returns points as (channel_idx, time_idx) = (x, y).
+    """
     if is_gauss:
         matrix = gaussian_filter(matrix, sigma=sigma)
 
     points = []
     points_value = []
-    for y in range(matrix.shape[0]):
-        row = matrix[y]
-        peak_x = np.argmax(row)
-        peak_value = row[peak_x]
-        if peak_value > threshold and x_range[0] < peak_x < x_range[1] and y_range[0] < y < y_range[1]:
-            points.append([float(peak_x), float(y)])
+    for x in range(matrix.shape[1]):
+        col = matrix[:, x]
+        peak_y = np.argmax(col)
+        peak_value = col[peak_y]
+        if peak_value > threshold and x_range[0] < x < x_range[1] and y_range[0] < peak_y < y_range[1]:
+            points.append([float(x), float(peak_y)])
             points_value.append(float(peak_value))
+
+    if not points:
+        return [], []
 
     if is_filt:
         lines = defaultdict(list)
-        for x, y in points:
-            lines[x].append(y)
-
+        for (x, y), val in zip(points, points_value):
+            lines[x].append((y, val))
         filtered_points = []
-        for x, y_list in lines.items():
-            y_list.sort()
-            mid_index = len(y_list) // 2
-            sampled_y = y_list[mid_index]
+        filtered_values = []
+        for x in sorted(lines.keys()):
+            yv_list = lines[x]
+            yv_list.sort(key=lambda yv: yv[0])
+            mid_index = len(yv_list) // 2
+            sampled_y, sampled_val = yv_list[mid_index]
             filtered_points.append([x, sampled_y])
+            filtered_values.append(sampled_val)
+        return filtered_points, filtered_values
     else:
-        filtered_points = sorted(points, key=lambda point: point[1])
-
-    if len(filtered_points) == 0:
-        filtered_points = []
-    
-    return filtered_points, points_value
+        order = sorted(range(len(points)), key=lambda i: (points[i][0], points[i][1]))
+        filtered_points = [points[i] for i in order]
+        filtered_values = [points_value[i] for i in order]
+        return filtered_points, filtered_values
 
 
 def compute_mask_iou(mask1: torch.Tensor, mask2: torch.Tensor) -> torch.Tensor:
