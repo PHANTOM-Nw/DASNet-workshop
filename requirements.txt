@@ -1,0 +1,12 @@
+torch
+torchvision
+numpy
+scipy
+pandas
+h5py
+obspy
+wandb
+tqdm
+fsspec
+gcsfs
+pycocotools
