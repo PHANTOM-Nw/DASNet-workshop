@@ -3,6 +3,7 @@
 
 import os
 import random
+from typing import Optional
 import h5py
 import numpy as np
 import pandas as pd
@@ -11,6 +12,7 @@ from torch.utils.data import Dataset
 from pycocotools.coco import COCO
 from torchvision.transforms import functional as F
 from scipy.signal import butter, sosfiltfilt
+import fsspec
 
 
 # =========================================================
@@ -135,21 +137,43 @@ def preprocess_data_rgb(
     data_is_strain_rate: bool = True,
     f_band=(2.0, 10.0),                 # bandpass for strain_rate
     f_high=10.0,                        # highpass for strain_rate
+    storage_backend: str = "local",     # "local" or "gcs"
+    gcs_key_path: Optional[str] = None,
 ):
     """
-    Read raw from H5: dataset 'data' with attrs 'dt_s'
-    Return rgb_input: (H, W, 3) where H=channels, W=time
-    """
-    with h5py.File(h5_path, "r") as f:
-        if data_key not in f:
-            raise KeyError(f"'{data_key}' not found in {h5_path}. Keys={list(f.keys())}")
-        dset = f[data_key]
-        dt = float(dset.attrs.get("dt_s", None))
-        if dt is None:
-            raise KeyError(f"dt_s attribute not found in {h5_path}:{data_key}")
+    Read raw from H5 (local or GCS) and return an RGB tensor-like array.
 
-        raw = dset[:]  # expected (nch, nt)
-        raw = raw.astype("float32")
+    - Expected dataset layout by default: f[data_key] with attrs["dt_s"]
+    - Shape convention: raw data is (nch, nt); output rgb is (H, W, 3)
+      where H = channels, W = time.
+    """
+    # --------------------------------------------------
+    # 1. Open HDF5 file from local FS or GCS
+    # --------------------------------------------------
+    if storage_backend == "gcs" or (isinstance(h5_path, str) and h5_path.startswith("gs://")):
+        fs = fsspec.filesystem("gcs", token=gcs_key_path)
+        with fs.open(h5_path, "rb") as fp:
+            with h5py.File(fp, "r") as f:
+                if data_key not in f:
+                    raise KeyError(f"'{data_key}' not found in {h5_path}. Keys={list(f.keys())}")
+                dset = f[data_key]
+                dt = float(dset.attrs.get("dt_s", None))
+                if dt is None:
+                    raise KeyError(f"dt_s attribute not found in {h5_path}:{data_key}")
+
+                raw = dset[:]  # expected (nch, nt)
+                raw = raw.astype("float32")
+    else:
+        with h5py.File(h5_path, "r") as f:
+            if data_key not in f:
+                raise KeyError(f"'{data_key}' not found in {h5_path}. Keys={list(f.keys())}")
+            dset = f[data_key]
+            dt = float(dset.attrs.get("dt_s", None))
+            if dt is None:
+                raise KeyError(f"dt_s attribute not found in {h5_path}:{data_key}")
+
+            raw = dset[:]  # expected (nch, nt)
+            raw = raw.astype("float32")
 
     if channel_range is not None:
         ch0, ch1 = channel_range
@@ -216,7 +240,7 @@ class DASTrainDataset(Dataset):
 
         # noise stacking
         synthetic_noise: bool = True,
-        noise_csv: str = "/home/chun/DASNet/scripts/train_noise.csv",
+        noise_csv: str = "/work/zhu-stor1/group/chun/standard_data/monterey_bay_noise/noise_list_lambda3.csv",
         syn_prob: float = 0.5,
         syn_factor_range=(0.5, 1.5),
 
@@ -389,31 +413,32 @@ class DASTrainDataset(Dataset):
     # -----------------------------
     def _generate_attention_mask(self, attention_mask_rects, mask_shape, original_shape):
         """
-        attention_mask_rects: list of [x_min, y_min, width, height] in ORIGINAL coordinate
-        mask_shape: (new_h, new_w) -> (channels_axis, time_axis) after resize
-        original_shape: (orig_h, orig_w) = (channels_axis, time_axis) before resize
+        attention_mask_rects: list of [x_min(time), y_min(channel), width(time), height(channel)]
+        mask_shape: (new_t, new_ch) after resize  -> (time, channel)
+        original_shape: (orig_t, orig_ch) before resize
         """
         attention_mask = np.zeros(mask_shape, dtype=np.uint8)
 
-        orig_h, orig_w = original_shape
-        new_h, new_w = mask_shape
-        scale_x = new_w / max(orig_w, 1)
-        scale_y = new_h / max(orig_h, 1)
+        orig_t, orig_ch = original_shape
+        new_t, new_ch = mask_shape
+        scale_t = new_t / max(orig_t, 1)
+        scale_ch = new_ch / max(orig_ch, 1)
 
         for rect in attention_mask_rects:
-            x_min, y_min, width, height = rect
-            x_min = int(x_min * scale_x)
-            y_min = int(y_min * scale_y)
-            width = int(width * scale_x)
-            height = int(height * scale_y)
+            x_min_t, y_min_ch, width_t, height_ch = rect
 
-            x_max = min(new_w, x_min + width)
-            y_max = min(new_h, y_min + height)
-            x_min = max(0, x_min)
-            y_min = max(0, y_min)
+            t0 = int(x_min_t * scale_t)
+            ch0 = int(y_min_ch * scale_ch)
+            t1 = int((x_min_t + width_t) * scale_t)
+            ch1 = int((y_min_ch + height_ch) * scale_ch)
 
-            if x_max > x_min and y_max > y_min:
-                attention_mask[y_min:y_max, x_min:x_max] = 1
+            t0 = max(0, t0)
+            ch0 = max(0, ch0)
+            t1 = min(new_t, t1)
+            ch1 = min(new_ch, ch1)
+
+            if t1 > t0 and ch1 > ch0:
+                attention_mask[t0:t1, ch0:ch1] = 1
 
         return attention_mask
 
@@ -453,13 +478,17 @@ class DASTrainDataset(Dataset):
         original_size_for_labels = (orig_W, orig_H)  # (orig_h, orig_w) in mask generation space
 
         # ===== resize by fixed scale =====
-        new_W = max(1, int(orig_W * self.resize_scale))
-        new_H = max(1, int(orig_H * self.resize_scale))
+        new_W = max(1, int(orig_W * self.resize_scale))  # time 方向
+        new_H = max(1, int(orig_H * self.resize_scale))  # channel 方向
         image = F.resize(image, (new_W, new_H))
 
-        # scale factors for labels (uniform scale, but keep x/y semantics)
-        scale_x = new_H / max(orig_H, 1)  # x is along time-axis (H dimension)
-        scale_y = new_W / max(orig_W, 1)  # y is along channel-axis (W dimension)
+        # COCO: x = time, y = channel
+        # 模型: y = time, x = channel
+        scale_t = new_W / max(orig_W, 1)   # time 缩放
+        scale_ch = new_H / max(orig_H, 1)  # channel 缩放
+
+        # mask / attention 使用的尺寸 (row=time, col=channel)
+        new_h, new_w = new_W, new_H
 
         # ===== build targets =====
         boxes = []
@@ -469,47 +498,52 @@ class DASTrainDataset(Dataset):
         areas = []
         iscrowd = []
 
-        new_h, new_w = new_W, new_H  # consistent with your old mask dims: (height, width) = (channels_axis, time_axis)
-
         for ann in annotations:
-            bbox = ann["bbox"]  # [x, y, w, h]
+            bbox = ann["bbox"]  # [x(time), y(channel), w(time), h(channel)]
             x0, y0, bw, bh = bbox
 
-            # boxes in xyxy
-            boxes.append([
-                x0 * scale_x,
-                y0 * scale_y,
-                (x0 + bw) * scale_x,
-                (y0 + bh) * scale_y,
-            ])
+            # project: x=channel, y=time
+            x1 = y0 * scale_ch
+            y1 = x0 * scale_t
+            x2 = (y0 + bh) * scale_ch
+            y2 = (x0 + bw) * scale_t
+
+            boxes.append([x1, y1, x2, y2])
             labels.append(ann["category_id"])
 
-            # area (scaled)
-            areas.append((bw * scale_x) * (bh * scale_y))
+            # area（time * channel）
+            areas.append((bw * scale_t) * (bh * scale_ch))
             iscrowd.append(ann.get("iscrowd", 0))
 
             # ===== gaussian line mask =====
-            mask = np.zeros((new_h, new_w), dtype=np.float32)
+            mask = np.zeros((new_h, new_w), dtype=np.float32)  # (time, channel)
 
-            std_dev = self.gaussian_std_dev_x * scale_x
+            std_dev = self.gaussian_std_dev_x * scale_t
             amplitude = float(self.gaussian_amplitude)
 
             segs = ann.get("segmentation", [])
             for seg in segs:
                 if len(seg) < 10:
                     continue
-                pts = [(int(seg[i] * scale_x), int(seg[i + 1] * scale_y)) for i in range(0, len(seg), 2)]
+
+                pts = []
+                for i in range(0, len(seg), 2):
+                    t = seg[i]
+                    ch = seg[i + 1]
+                    x = int(ch * scale_ch)
+                    y = int(t * scale_t)
+                    pts.append((x, y))
+
                 pts = interpolate_line_segments_int(pts)
                 for x, y in pts:
-                    if 0 <= y < new_h:
-                        mask[y] += gaussian_line(x, std_dev, amplitude, new_w)
+                    if 0 <= x < new_w:
+                        mask[:, x] += gaussian_line(y, std_dev, amplitude, new_h)
 
-            # row normalize
-            row_max = np.max(mask, axis=1) if mask.size else np.zeros((new_h,), dtype=np.float32)
-            rows = row_max > amplitude
-            if np.any(rows):
-                scales = row_max[rows] / amplitude
-                mask[rows, :] /= scales[:, None]
+            col_max = np.max(mask, axis=0) if mask.size else np.zeros((new_w,), dtype=np.float32)
+            cols = col_max > amplitude
+            if np.any(cols):
+                scales = col_max[cols] / amplitude
+                mask[:, cols] /= scales[None, :]
 
             mask_u8 = (mask * 255).astype(np.uint8)
             masks.append(mask_u8)
@@ -566,9 +600,7 @@ class DASTrainDataset(Dataset):
 
 class DASInferDataset(Dataset):
     """
-    Prediction dataset:
-    - read each file (data + dt_s)
-    - preprocess -> rgb (strain_rate, bandpass(sr), highpass(sr)) + normalize
+    Prediction dataset.
     """
 
     def __init__(
@@ -580,20 +612,45 @@ class DASInferDataset(Dataset):
         channel_range=None,
         f_band=(2.0, 10.0),
         f_high=10.0,
+        storage_backend: str = "auto",   # "auto", "local", "gcs"
+        gcs_key_path: Optional[str] = None,
     ):
-        self.hdf5_files = hdf5_files
+        """
+        Args:
+            hdf5_files: list[str] of HDF5 paths (local path or gs:// URL)
+            resize_scale: resize the input
+            storage_backend:
+                - "local": only use local file
+                - "gcs":   only use GCS filesystem
+                - "auto":  decide automatically
+            gcs_key_path: GCS key path (json)
+        """
+        self.hdf5_files = list(hdf5_files)
         self.resize_scale = float(resize_scale)
         self.data_key = data_key
         self.data_is_strain_rate = data_is_strain_rate
         self.channel_range = channel_range
         self.f_band = f_band
         self.f_high = f_high
+        self.storage_backend = storage_backend
+        self.gcs_key_path = gcs_key_path
 
     def __len__(self):
         return len(self.hdf5_files)
 
+    def _resolve_backend(self, path: str) -> str:
+        if self.storage_backend == "local":
+            return "local"
+        if self.storage_backend == "gcs":
+            return "gcs"
+        if isinstance(path, str) and path.startswith("gs://"):
+            return "gcs"
+        return "local"
+
     def __getitem__(self, idx):
         file_path = self.hdf5_files[idx]
+        backend = self._resolve_backend(file_path)
+
         rgb, _dt = preprocess_data_rgb(
             file_path,
             channel_range=self.channel_range,
@@ -601,6 +658,8 @@ class DASInferDataset(Dataset):
             data_is_strain_rate=self.data_is_strain_rate,
             f_band=self.f_band,
             f_high=self.f_high,
+            storage_backend=backend,
+            gcs_key_path=self.gcs_key_path,
         )  # (H, W, 3)
 
         image = torch.from_numpy(rgb).permute(2, 1, 0)  # (C, W, H)
