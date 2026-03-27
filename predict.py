@@ -77,7 +77,16 @@ def get_files(data_list: str):
     return paths
         
 
-def extract_peak_points(matrix, x_range, y_range, threshold=0.5, sigma=5, is_filt=True, is_gauss=True):
+def extract_peak_points(
+    matrix,
+    x_range,
+    y_range,
+    threshold=0.5,
+    sigma=5,
+    is_filt=True,
+    is_gauss=True,
+    top_k=5,
+):
     """
     For each channel (column), find the time (row) where the value is max → one time point per channel.
     matrix: (time, channel) = (H, W). Returns points as (channel_idx, time_idx) = (x, y).
@@ -87,13 +96,33 @@ def extract_peak_points(matrix, x_range, y_range, threshold=0.5, sigma=5, is_fil
 
     points = []
     points_value = []
-    for x in range(matrix.shape[1]):
+    x_min = max(0, int(np.floor(x_range[0])))
+    x_max = min(matrix.shape[1], int(np.ceil(x_range[1])))
+    y_min = max(0, int(np.floor(y_range[0])))
+    y_max = min(matrix.shape[0], int(np.ceil(y_range[1])))
+
+    if x_min >= x_max or y_min >= y_max:
+        return [], []
+
+    k = max(1, int(top_k))
+    for x in range(x_min, x_max):
         col = matrix[:, x]
-        peak_y = np.argmax(col)
-        peak_value = col[peak_y]
-        if peak_value > threshold and x_range[0] < x < x_range[1] and y_range[0] < peak_y < y_range[1]:
-            points.append([float(x), float(peak_y)])
-            points_value.append(float(peak_value))
+        if col.size == 0:
+            continue
+
+        kk = min(k, col.size)
+        top_idx = np.argpartition(col, -kk)[-kk:]
+
+        # Keep only top-k peaks that fall inside bbox y-range, then choose strongest.
+        inside = [int(i) for i in top_idx if y_min <= int(i) < y_max]
+        if not inside:
+            continue
+
+        best_y = max(inside, key=lambda yi: float(col[yi]))
+        best_v = float(col[best_y])
+        if best_v > threshold:
+            points.append([float(x), float(best_y)])
+            points_value.append(best_v)
 
     if not points:
         return [], []
@@ -234,8 +263,8 @@ def postprocess_dasnet(filenames, output, alpha=(1000 / 200) / 5.1):
             )
             # resized: (1, 1, time_target, channel_width)
 
-            # 4) Paste into image; if resized height exceeds image bottom, keep front part only
-            paste_height = min(time_target, H_img - y_min)
+            # 4) Paste into image and keep it inside both image and box time extent
+            paste_height = min(time_target, H_img - y_min, height)
             final_masks[j, y_min : y_min + paste_height, x_min:x_max] = resized[0, 0, :paste_height, :]
 
         result["masks"] = final_masks.cpu().numpy()
@@ -394,15 +423,34 @@ def plot_das_predictions(input_data, predictions, save_path, score_threshold=0.8
     """
     Plot prediction boxes and masks on DAS image.
 
-    Convention (aligned with das.py): image_data shape (W, H) = (time, channel);
+    Convention (aligned with das.py): each channel view is (W, H) = (time, channel);
     box (x_min, y_min, x_max, y_max) has x=channel, y=time.
     We display with x = time, y = channel: show image_data.T and map box to (time, channel).
+
+    Accepts a (C, W, H) array (e.g. model input after .numpy()), a length-C list of (W, H)
+    arrays, or a length-1 list wrapping (C, W, H) (common notebook mistake).
     """
+    x = input_data
+    if isinstance(x, (list, tuple)) and len(x) == 1:
+        x = x[0]
+    arr = np.asarray(x, dtype=np.float32)
+    if arr.ndim == 3:
+        c = arr.shape[0]
+        if c >= 3:
+            channel_views = [arr[0], arr[1], arr[2]]
+        elif c == 2:
+            channel_views = [arr[0], arr[1], arr[1]]
+        else:
+            channel_views = [arr[0], arr[0], arr[0]]
+    elif arr.ndim == 2:
+        channel_views = [arr, arr, arr]
+    else:
+        raise ValueError(f"plot_das_predictions: expected 2D or (C,W,H) array, got shape {arr.shape}")
+
     fig, axes = plt.subplots(3, 1, figsize=(7 * 7 / 2 * 0.6, 3 * 7 * 7 / 8 * 0.6))
 
     for idx, ax in enumerate(axes):
-        # input_data[idx]: (W, H) = (time, channel) from model image (C, W, H)
-        image_data = np.array(input_data[idx], dtype=np.float32)
+        image_data = np.asarray(channel_views[idx], dtype=np.float32)
         # Display x=time, y=channel -> show (channel, time) so imshow puts time on x-axis
         display_img = image_data.T  # (H, W) = (channel, time)
         n_channel, n_time = display_img.shape
