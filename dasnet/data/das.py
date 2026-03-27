@@ -207,6 +207,54 @@ def preprocess_data_rgb(
     return rgb, dt
 
 
+def preprocess_from_array(
+    data_nch_nt: np.ndarray,
+    dt_s: float,
+    data_is_strain_rate: bool = True,
+    f_band=(2.0, 10.0),
+    f_high=10.0,
+):
+    """
+    Same preprocessing as preprocess_data_rgb but accepts a numpy array directly
+    instead of reading from an HDF5 file. Used by the real-time pipeline.
+
+    Args:
+        data_nch_nt: (nch, nt) float32 array
+        dt_s: sampling interval in seconds
+        data_is_strain_rate: whether input is already strain rate
+        f_band: bandpass frequency range
+        f_high: highpass cutoff frequency
+
+    Returns:
+        rgb: (H=channels, W=time, 3) float32
+        dt_s: passthrough of the sampling interval
+    """
+    raw = np.asarray(data_nch_nt, dtype=np.float32)
+
+    if data_is_strain_rate:
+        strain_rate = raw
+    else:
+        sr = np.diff(raw, axis=1) / dt_s
+        sr = np.concatenate([np.zeros((sr.shape[0], 1), dtype=sr.dtype), sr], axis=1)
+        strain_rate = sr
+
+    sos_bp = _safe_design_sos_bandpass(dt_s, f_band[0], f_band[1], order=4)
+    sos_hp = _safe_design_sos_highpass(dt_s, f_high, order=4)
+
+    sr_bp = sosfiltfilt(sos_bp, strain_rate, axis=1)
+    sr_hp = sosfiltfilt(sos_hp, strain_rate, axis=1)
+
+    ch0 = normalize(strain_rate.T).T
+    ch1 = normalize(sr_bp.T).T
+    ch2 = normalize(sr_hp.T).T
+
+    rgb = np.zeros((ch0.shape[0], ch0.shape[1], 3), dtype=np.float32)
+    rgb[:, :, 0] = ch0
+    rgb[:, :, 1] = ch1
+    rgb[:, :, 2] = ch2
+    return rgb, dt_s
+
+
 # =========================================================
 # Training Dataset (full features)
 # =========================================================
@@ -537,7 +585,9 @@ class DASTrainDataset(Dataset):
                 pts = interpolate_line_segments_int(pts)
                 for x, y in pts:
                     if 0 <= x < new_w:
-                        mask[:, x] += gaussian_line(y, std_dev, amplitude, new_h)
+                        # Keep only the strongest response per column to avoid
+                        # multi-peak accumulation around turning points.
+                        mask[:, x] = np.maximum(mask[:, x], gaussian_line(y, std_dev, amplitude, new_h))
 
             col_max = np.max(mask, axis=0) if mask.size else np.zeros((new_w,), dtype=np.float32)
             cols = col_max > amplitude
