@@ -103,6 +103,25 @@ def test_curves_json_to_coco_anns_basic_shape():
         assert a["area"] == pytest.approx(w * h)
 
 
+def test_curves_json_to_coco_anns_emits_attention_mask():
+    """Each curve must output an attention_mask single-rect equal to its bbox."""
+    json_path = SAMPLE.with_suffix(".json")
+    anns, _ = curves_json_to_coco_anns(
+        json_path=json_path,
+        image_id=1,
+        category_id=LABEL_TO_CATID["car"],
+        start_ann_id=0,
+    )
+    assert len(anns) >= 1
+    for a in anns:
+        assert "attention_mask" in a, "must emit attention_mask field for DASNet weighted_attention loss"
+        am = a["attention_mask"]
+        assert isinstance(am, list) and len(am) == 1, "expect one rectangle"
+        rect = am[0]
+        assert len(rect) == 4
+        assert rect == a["bbox"], f"attention_mask rect should equal bbox, got {rect} vs {a['bbox']}"
+
+
 def test_curves_json_drops_degenerate_curves(tmp_path):
     fake = {
         "shape": [100, 200],

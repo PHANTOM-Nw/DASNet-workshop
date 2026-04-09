@@ -165,14 +165,19 @@ def curves_json_to_coco_anns(
         bw = max(1.0, t_max - t_min)
         bh = max(1.0, ch_max - ch_min)
 
+        bbox_rect = [t_min, ch_min, bw, bh]
         anns.append({
             "id": ann_id,
             "image_id": image_id,
             "category_id": int(category_id),
             "iscrowd": 0,
-            "bbox": [t_min, ch_min, bw, bh],
+            "bbox": bbox_rect,
             "area": float(bw * bh),
             "segmentation": [poly],
+            # DASNet's weighted_attention_maskrcnn_loss gates mask loss by per-instance
+            # attention rectangles. Without this field, das.py fills zeros and loss_mask
+            # is permanently 0. Use the bbox itself as a single attention rectangle.
+            "attention_mask": [list(bbox_rect)],
         })
         ann_id += 1
 
