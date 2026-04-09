@@ -97,3 +97,62 @@ def decimate_and_rewrite_h5(src_h5: Path, dst_h5: Path) -> tuple[int, int]:
                 dset_dst[ch0:ch1, :] = decimated.T.astype(np.float32)
 
     return nch, nt_dec
+
+
+def curves_json_to_coco_anns(
+    json_path: Path,
+    image_id: int,
+    category_id: int,
+    start_ann_id: int,
+) -> tuple[list[dict], int]:
+    """Convert one curves JSON into a list of COCO annotation dicts.
+
+    Czech JSON convention (verified): curve.x = channel index (sub-pixel float),
+    curve.y = time-window index (sub-pixel float, 0..nt/ANN_SHIFT). We convert
+    time-window to decimated-sample index via ANN_Y_TO_T_DEC, then emit:
+
+    * segmentation = [[t0, ch0, t1, ch1, ...]] (DASNet seg[i]=time, seg[i+1]=channel)
+    * bbox         = [t_min, ch_min, t_max - t_min, ch_max - ch_min]
+    * area         = bbox_w * bbox_h
+
+    Curves with fewer than 5 points are dropped (DASNet drops len(seg) < 10).
+    """
+    j = json.loads(json_path.read_text())
+    n_tw, n_ch = j["shape"]
+
+    anns: list[dict] = []
+    ann_id = start_ann_id
+
+    for key in sorted(j.keys()):
+        if not key.startswith("curve"):
+            continue
+        cx = np.asarray(j[key]["x"], dtype=np.float64)  # channel (float, sub-pixel)
+        cy = np.asarray(j[key]["y"], dtype=np.float64)  # time-window (float)
+        if len(cx) < 5 or len(cx) != len(cy):
+            continue
+
+        ch = np.clip(cx, 0, n_ch - 1)
+        t_dec = np.clip(cy * ANN_Y_TO_T_DEC, 0, (n_tw - 1) * ANN_Y_TO_T_DEC)
+
+        poly: list[float] = []
+        for t_val, ch_val in zip(t_dec.tolist(), ch.tolist()):
+            poly.append(float(t_val))
+            poly.append(float(ch_val))
+
+        t_min, t_max = float(t_dec.min()), float(t_dec.max())
+        ch_min, ch_max = float(ch.min()), float(ch.max())
+        bw = max(1.0, t_max - t_min)
+        bh = max(1.0, ch_max - ch_min)
+
+        anns.append({
+            "id": ann_id,
+            "image_id": image_id,
+            "category_id": int(category_id),
+            "iscrowd": 0,
+            "bbox": [t_min, ch_min, bw, bh],
+            "area": float(bw * bh),
+            "segmentation": [poly],
+        })
+        ann_id += 1
+
+    return anns, ann_id

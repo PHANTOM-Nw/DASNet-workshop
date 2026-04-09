@@ -60,3 +60,57 @@ def test_decimate_and_rewrite_h5_shapes_and_attrs(tmp_path):
         assert float(dset.attrs["dt_s"]) == pytest.approx(DT_S_OUT)
         sample = dset[dset.shape[0] // 2, :]
         assert np.all(np.isfinite(sample))
+
+
+from scripts.czech_das_to_dasnet import (
+    curves_json_to_coco_anns,
+    ANN_Y_TO_T_DEC,
+    LABEL_TO_CATID,
+)
+
+
+def test_curves_json_to_coco_anns_basic_shape():
+    json_path = SAMPLE.with_suffix(".json")
+    anns, next_id = curves_json_to_coco_anns(
+        json_path=json_path,
+        image_id=1,
+        category_id=LABEL_TO_CATID["car"],
+        start_ann_id=100,
+    )
+    assert len(anns) >= 1
+    assert next_id == 100 + len(anns)
+
+    j = json.loads(json_path.read_text())
+    n_tw, n_ch = j["shape"]
+    t_max = (n_tw - 1) * ANN_Y_TO_T_DEC + 1
+
+    for i, a in enumerate(anns):
+        assert a["id"] == 100 + i
+        assert a["image_id"] == 1
+        assert a["category_id"] == LABEL_TO_CATID["car"]
+        assert a["iscrowd"] == 0
+        x, y, w, h = a["bbox"]
+        assert 0 <= x and x + w <= t_max + 1, f"bbox time overflow: {a['bbox']}, t_max={t_max}"
+        assert 0 <= y and y + h <= n_ch + 1, f"bbox channel overflow: {a['bbox']}, n_ch={n_ch}"
+        assert w > 0 and h > 0
+        assert isinstance(a["segmentation"], list) and len(a["segmentation"]) == 1
+        poly = a["segmentation"][0]
+        assert len(poly) >= 10 and len(poly) % 2 == 0
+        times = poly[0::2]
+        chans = poly[1::2]
+        assert min(times) >= 0 and max(times) <= t_max
+        assert min(chans) >= 0 and max(chans) < n_ch
+        assert a["area"] == pytest.approx(w * h)
+
+
+def test_curves_json_drops_degenerate_curves(tmp_path):
+    fake = {
+        "shape": [100, 200],
+        "curve0": {"x": [10, 10, 10], "y": [1, 2, 3]},
+        "curve1": {"x": [10, 11, 12, 13, 14, 15], "y": [0, 1, 2, 3, 4, 5]},
+    }
+    p = tmp_path / "fake.json"
+    p.write_text(json.dumps(fake))
+    anns, _ = curves_json_to_coco_anns(p, image_id=7, category_id=1, start_ann_id=0)
+    assert len(anns) == 1
+    assert len(anns[0]["segmentation"][0]) == 12
