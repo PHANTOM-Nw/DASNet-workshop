@@ -1,0 +1,27 @@
+[project]
+name = "dasnet-workshop"
+version = "0.1.0"
+description = "Mask R-CNN for DAS (Distributed Acoustic Sensing) event detection"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "scipy",
+    "pandas",
+    "h5py",
+    "obspy",
+    "wandb",
+    "tqdm",
+    "fsspec",
+    "gcsfs",
+    "pycocotools",
+]
+
+[tool.uv]
+# Place for uv-specific config (e.g. index-url, dev deps) later.
+
+[tool.setuptools.packages.find]
+include = ["dasnet*"]
+exclude = ["das-dataloader*", "scripts*", "docs*"]
