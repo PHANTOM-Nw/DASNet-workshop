@@ -114,3 +114,77 @@ def test_curves_json_drops_degenerate_curves(tmp_path):
     anns, _ = curves_json_to_coco_anns(p, image_id=7, category_id=1, start_ann_id=0)
     assert len(anns) == 1
     assert len(anns[0]["segmentation"][0]) == 12
+
+
+from scripts.czech_das_to_dasnet import build_coco_and_convert
+
+
+def test_build_coco_and_convert_one_sample(tmp_path):
+    out_root = tmp_path / "czech_das"
+    coco_path = tmp_path / "coco.json"
+
+    manifest = [("car", SAMPLE.with_suffix(".h5"))]
+    build_coco_and_convert(
+        manifest=manifest,
+        out_root=out_root,
+        coco_out=coco_path,
+    )
+
+    out_h5 = out_root / "car" / (SAMPLE.name + ".h5")
+    assert out_h5.exists()
+    with h5py.File(out_h5, "r") as f:
+        assert OUT_DSET_NAME in f
+        assert f[OUT_DSET_NAME].shape[0] > 1000
+        assert float(f[OUT_DSET_NAME].attrs["dt_s"]) == pytest.approx(DT_S_OUT)
+
+    from pycocotools.coco import COCO
+    coco = COCO(str(coco_path))
+    assert len(coco.imgs) == 1
+    img = list(coco.imgs.values())[0]
+    assert img["file_name"].endswith("_0.jpg")
+    assert img["file_name"].replace("_0.jpg", "") == f"car/{SAMPLE.name}.h5"
+    assert img["width"] > 0 and img["height"] > 0
+
+    anns = coco.loadAnns(coco.getAnnIds(imgIds=img["id"]))
+    assert len(anns) >= 1
+    assert all(a["category_id"] == LABEL_TO_CATID["car"] for a in anns)
+
+
+def test_dasnet_train_dataset_consumes_converted_output(tmp_path):
+    """The whole point: DASTrainDataset must load a converted sample without code changes."""
+    import torch
+    from dasnet.data.das import DASTrainDataset
+
+    out_root = tmp_path / "czech_das"
+    coco_path = tmp_path / "mini_coco.json"
+
+    build_coco_and_convert(
+        manifest=[("car", SAMPLE.with_suffix(".h5"))],
+        out_root=out_root,
+        coco_out=coco_path,
+    )
+
+    ds = DASTrainDataset(
+        ann_path=str(coco_path),
+        root_dir=str(out_root),
+        resize_scale=0.25,
+        synthetic_noise=False,
+        enable_stack_event=False,
+        enable_vflip=False,
+    )
+    assert len(ds) == 1
+    image, target = ds[0]
+
+    assert isinstance(image, torch.Tensor)
+    assert image.shape[0] == 3
+    assert image.dtype == torch.float32
+    assert torch.all(torch.isfinite(image))
+
+    for key in ("boxes", "labels", "masks", "attention_masks", "image_id", "area", "iscrowd"):
+        assert key in target
+    assert target["boxes"].shape[0] >= 1
+    assert target["boxes"].shape[1] == 4
+    assert target["labels"].dtype == torch.int64
+    assert target["masks"].shape[0] == target["boxes"].shape[0]
+    assert target["masks"].shape[1:] == (image.shape[1], image.shape[2])
+    assert int(target["masks"].sum()) > 0

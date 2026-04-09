@@ -156,3 +156,98 @@ def curves_json_to_coco_anns(
         ann_id += 1
 
     return anns, ann_id
+
+
+def build_coco_and_convert(
+    manifest: list[tuple[str, Path]],
+    out_root: Path,
+    coco_out: Path,
+) -> dict:
+    """Convert each (label, src_h5) pair and write a single COCO JSON."""
+    images: list[dict] = []
+    annotations: list[dict] = []
+    next_ann_id = 1
+
+    for idx, (label, src_h5) in enumerate(manifest, start=1):
+        src_json = src_h5.with_suffix(".json")
+        dst_h5 = out_root / label / src_h5.name
+
+        print(f"[{idx}/{len(manifest)}] {label}/{src_h5.name}")
+        nch, nt_dec = decimate_and_rewrite_h5(src_h5, dst_h5)
+
+        # DASNet file_name convention: strip _0.jpg -> "<label>/<stem>.h5"
+        file_name = f"{label}/{src_h5.name}_0.jpg"
+
+        images.append({
+            "id": idx,
+            "file_name": file_name,
+            # width = time, height = channel (matches DASNet (W=time, H=channel) tensor)
+            "width": int(nt_dec),
+            "height": int(nch),
+        })
+
+        anns, next_ann_id = curves_json_to_coco_anns(
+            json_path=src_json,
+            image_id=idx,
+            category_id=LABEL_TO_CATID[label],
+            start_ann_id=next_ann_id,
+        )
+        annotations.extend(anns)
+
+    coco = {
+        "info": {"description": "Czech DAS-dataset converted for DASNet"},
+        "images": images,
+        "annotations": annotations,
+        "categories": CATEGORIES,
+    }
+    coco_out.parent.mkdir(parents=True, exist_ok=True)
+    coco_out.write_text(json.dumps(coco))
+    return coco
+
+
+def _deterministic_split(
+    manifest: list[tuple[str, Path]], val_fraction: float
+) -> tuple[list, list]:
+    """Hash-based deterministic split."""
+    train: list = []
+    val: list = []
+    for label, src_h5 in manifest:
+        h = hashlib.md5(src_h5.name.encode()).hexdigest()
+        bucket = int(h, 16) % 1000 / 1000.0
+        (val if bucket < val_fraction else train).append((label, src_h5))
+    if not val and len(train) >= 2:
+        val.append(train.pop())
+    if not train and len(val) >= 2:
+        train.append(val.pop())
+    return train, val
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--src-root", type=Path, default=Path("z:/DAS-dataset/data"),
+                    help="source dataset root (contains per-label subdirs)")
+    ap.add_argument("--out-root", type=Path, default=Path("z:/DAS-dataset_dasnet/data"),
+                    help="output root for converted h5; convention z:/{origin_dataset_name}_dasnet/data")
+    ap.add_argument("--coco-dir", type=Path, default=Path("z:/DAS-dataset_dasnet/annotations"),
+                    help="output dir for COCO JSON; convention z:/{origin_dataset_name}_dasnet/annotations")
+    ap.add_argument("--val-fraction", type=float, default=0.2)
+    ap.add_argument("--limit", type=int, default=0, help="debug: only process first N files")
+    args = ap.parse_args()
+
+    manifest = list(iter_source_triples(args.src_root))
+    if args.limit > 0:
+        manifest = manifest[: args.limit]
+    if not manifest:
+        raise SystemExit(f"No labelled .h5/.json pairs found under {args.src_root}")
+
+    train, val = _deterministic_split(manifest, args.val_fraction)
+    print(f"Found {len(manifest)} files -> train={len(train)} val={len(val)}")
+
+    args.coco_dir.mkdir(parents=True, exist_ok=True)
+    build_coco_and_convert(train, args.out_root, args.coco_dir / "train.json")
+    build_coco_and_convert(val, args.out_root, args.coco_dir / "val.json")
+    print("Done. DASNet-ready files in", args.out_root)
+
+
+if __name__ == "__main__":
+    main()
