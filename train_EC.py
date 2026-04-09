@@ -501,10 +501,10 @@ def main(args):
     dataset = DASTrainDataset(
         ann_path=args.anno_path,
         root_dir=args.data_path,
-        allowed_bins=allowed_bins,
-        min_keep_bins=min_keep_bins,
+        allowed_bins={},
+        min_keep_bins={},#EC数据集中没有弱信号过滤
         resize_scale=0.5,
-        synthetic_noise=True,
+        synthetic_noise=False,
         enable_vflip=True,
     )
     dataset_test = DASTrainDataset(
