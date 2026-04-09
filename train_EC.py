@@ -456,7 +456,13 @@ def get_lr(it, max_lr, min_lr, warmup_steps, max_steps):
     if it > max_steps:
         return min_lr
     # 3) in between, use cosine decay down to min learning rate
-    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    # Guard against degenerate config (e.g. 1-epoch smoke runs where max_steps == warmup_steps).
+    # In that case there is no "decay phase" — clamp ratio to 0 (still at max_lr).
+    denom = max_steps - warmup_steps
+    if denom <= 0:
+        decay_ratio = 0.0
+    else:
+        decay_ratio = (it - warmup_steps) / denom
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
