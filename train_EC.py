@@ -516,6 +516,11 @@ def main(args):
         enable_stack_event=False
     )
 
+    # ===== Auto-derive num_classes (background + COCO categories) =====
+    n_categories = len(dataset.coco.cats)
+    num_classes_auto = 1 + n_categories
+    print(f"[train_EC] auto num_classes = 1 + {n_categories} categories = {num_classes_auto}")
+
     train_sampler = DistributedSampler(dataset) if args.distributed else None
     test_sampler = DistributedSampler(dataset_test, shuffle=False) if args.distributed else None
 
@@ -540,7 +545,7 @@ def main(args):
     # build model
     model = build_model( # eqnet.models.__dict__[args.model].build_model(
         model_name="maskrcnn_resnet50_selectable_fpn",
-        num_classes=1+10,
+        num_classes=num_classes_auto,
         pretrained=False,
         pretrained_backbone=True,
         trainable_backbone_layers=3,
