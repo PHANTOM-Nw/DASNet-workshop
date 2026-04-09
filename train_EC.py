@@ -509,17 +509,22 @@ def main(args):
         root_dir=args.data_path,
         allowed_bins={},
         min_keep_bins={},#EC数据集中没有弱信号过滤
-        resize_scale=0.5,
-        synthetic_noise=False,
+        resize_scale=args.resize_scale,
+        synthetic_noise=args.synthetic_noise,
+        noise_csv=args.noise_csv if args.noise_csv else "",
         enable_vflip=True,
+        data_key=args.data_key,
+        data_is_strain_rate=args.strain_rate,
     )
     dataset_test = DASTrainDataset(
         ann_path=args.val_anno_path,
         root_dir=args.val_data_path,
-        resize_scale=0.5,
+        resize_scale=args.resize_scale,
         enable_vflip=False,
         synthetic_noise=False,
-        enable_stack_event=False
+        enable_stack_event=False,
+        data_key=args.data_key,
+        data_is_strain_rate=args.strain_rate,
     )
 
     # ===== Auto-derive num_classes (background + COCO categories) =====
@@ -734,6 +739,21 @@ def get_args_parser(add_help=True):
     parser.add_argument("--checkpoint", default=None, type=str, help="Path to a checkpoint file")
     parser.add_argument("--start-epoch", default=0, type=int, metavar="N", help="Starting epoch number")
     parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
+
+    # ===== Dataset / model knobs (added by train_EC) =====
+    parser.add_argument("--resize-scale", type=float, default=0.5,
+                        help="Spatial resize ratio applied to (time, channel) before model input.")
+    parser.add_argument("--data-key", type=str, default="data",
+                        help="HDF5 dataset name inside each input .h5 file.")
+    parser.add_argument("--no-strain-rate", dest="strain_rate", action="store_false",
+                        help="Treat the input as raw strain instead of strain rate.")
+    parser.set_defaults(strain_rate=True)
+    parser.add_argument("--synthetic-noise", dest="synthetic_noise", action="store_true",
+                        help="Enable noise overlay augmentation (requires --noise-csv).")
+    parser.add_argument("--no-synthetic-noise", dest="synthetic_noise", action="store_false")
+    parser.set_defaults(synthetic_noise=False)
+    parser.add_argument("--noise-csv", type=str, default=None,
+                        help="Path to noise overlay manifest CSV. Required if --synthetic-noise.")
 
     # Distributed training parameters
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
