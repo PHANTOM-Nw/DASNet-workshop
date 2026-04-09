@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 
@@ -63,15 +64,33 @@ def iter_source_triples(src_root: Path) -> Iterable[tuple[str, Path]]:
 def decimate_and_rewrite_h5(src_h5: Path, dst_h5: Path) -> tuple[int, int]:
     """Read (nt, nch) raw int16 waveform, decimate time by DECIMATE, write (nch, nt_dec) float32.
 
+    Atomic write: writes to dst_h5.with_suffix('.h5.tmp') first, then renames on success.
+    If dst_h5 already exists and is a complete file, skip (idempotent resume).
     Processes CH_BLOCK channels at a time to cap peak memory. Returns (nch, nt_dec).
     """
     dst_h5.parent.mkdir(parents=True, exist_ok=True)
+
+    # idempotent skip: if final file exists and is readable, trust it
+    if dst_h5.exists():
+        try:
+            with h5py.File(dst_h5, "r") as f:
+                d = f[OUT_DSET_NAME]
+                nch, nt_dec = int(d.shape[0]), int(d.shape[1])
+                print(f"  skip (exists) {dst_h5.name} -> ({nch}, {nt_dec})", flush=True)
+                return nch, nt_dec
+        except Exception:
+            dst_h5.unlink(missing_ok=True)  # corrupt, redo
+
+    tmp_path = dst_h5.with_suffix(".h5.tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+
     with h5py.File(src_h5, "r") as f_src:
         dset_src = f_src[RAW_DSET_PATH]
         nt_raw, nch = dset_src.shape
         nt_dec = -(-nt_raw // DECIMATE)
 
-        with h5py.File(dst_h5, "w") as f_dst:
+        with h5py.File(tmp_path, "w") as f_dst:
             dset_dst = f_dst.create_dataset(
                 OUT_DSET_NAME,
                 shape=(nch, nt_dec),
@@ -96,6 +115,8 @@ def decimate_and_rewrite_h5(src_h5: Path, dst_h5: Path) -> tuple[int, int]:
                     decimated = fixed
                 dset_dst[ch0:ch1, :] = decimated.T.astype(np.float32)
 
+    # atomic rename: .h5.tmp -> .h5 only after the file is fully closed & valid
+    tmp_path.replace(dst_h5)
     return nch, nt_dec
 
 
@@ -158,22 +179,52 @@ def curves_json_to_coco_anns(
     return anns, ann_id
 
 
+def _decimate_worker(args: tuple[int, str, Path, Path]) -> tuple[int, int, int]:
+    """Worker for ProcessPoolExecutor: decimate one file, return (idx, nch, nt_dec)."""
+    idx, label, src_h5, dst_h5 = args
+    nch, nt_dec = decimate_and_rewrite_h5(src_h5, dst_h5)
+    print(f"  done [{idx}] {label}/{src_h5.name} -> ({nch}, {nt_dec})", flush=True)
+    return idx, nch, nt_dec
+
+
 def build_coco_and_convert(
     manifest: list[tuple[str, Path]],
     out_root: Path,
     coco_out: Path,
+    workers: int = 1,
 ) -> dict:
-    """Convert each (label, src_h5) pair and write a single COCO JSON."""
+    """Convert each (label, src_h5) pair and write a single COCO JSON.
+
+    When workers > 1, decimation runs in a ProcessPoolExecutor; COCO building
+    is serial (fast, ~ms per file).
+    """
+    # First pass: parallel decimation
+    jobs: list[tuple[int, str, Path, Path]] = []
+    for idx, (label, src_h5) in enumerate(manifest, start=1):
+        dst_h5 = out_root / label / src_h5.name
+        jobs.append((idx, label, src_h5, dst_h5))
+
+    shapes: dict[int, tuple[int, int]] = {}
+    if workers > 1 and len(jobs) > 1:
+        print(f"decimating {len(jobs)} files with {workers} workers...")
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_decimate_worker, j) for j in jobs]
+            for fut in as_completed(futures):
+                idx, nch, nt_dec = fut.result()
+                shapes[idx] = (nch, nt_dec)
+    else:
+        for j in jobs:
+            idx, nch, nt_dec = _decimate_worker(j)
+            shapes[idx] = (nch, nt_dec)
+
+    # Second pass: serial COCO build
     images: list[dict] = []
     annotations: list[dict] = []
     next_ann_id = 1
 
     for idx, (label, src_h5) in enumerate(manifest, start=1):
         src_json = src_h5.with_suffix(".json")
-        dst_h5 = out_root / label / src_h5.name
-
-        print(f"[{idx}/{len(manifest)}] {label}/{src_h5.name}")
-        nch, nt_dec = decimate_and_rewrite_h5(src_h5, dst_h5)
+        nch, nt_dec = shapes[idx]
 
         # DASNet file_name convention: strip _0.jpg -> "<label>/<stem>.h5"
         file_name = f"{label}/{src_h5.name}_0.jpg"
@@ -232,6 +283,7 @@ def main() -> None:
                     help="output dir for COCO JSON; convention z:/{origin_dataset_name}_dasnet/annotations")
     ap.add_argument("--val-fraction", type=float, default=0.2)
     ap.add_argument("--limit", type=int, default=0, help="debug: only process first N files")
+    ap.add_argument("--workers", type=int, default=4, help="parallel decimation workers")
     args = ap.parse_args()
 
     manifest = list(iter_source_triples(args.src_root))
@@ -244,8 +296,8 @@ def main() -> None:
     print(f"Found {len(manifest)} files -> train={len(train)} val={len(val)}")
 
     args.coco_dir.mkdir(parents=True, exist_ok=True)
-    build_coco_and_convert(train, args.out_root, args.coco_dir / "train.json")
-    build_coco_and_convert(val, args.out_root, args.coco_dir / "val.json")
+    build_coco_and_convert(train, args.out_root, args.coco_dir / "train.json", workers=args.workers)
+    build_coco_and_convert(val, args.out_root, args.coco_dir / "val.json", workers=args.workers)
     print("Done. DASNet-ready files in", args.out_root)
 
 
