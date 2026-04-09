@@ -504,7 +504,7 @@ def main(args):
         allowed_bins=allowed_bins,
         min_keep_bins=min_keep_bins,
         resize_scale=0.5,
-        synthetic_noise=True,
+        synthetic_noise=False,
         enable_vflip=True,
     )
     dataset_test = DASTrainDataset(
