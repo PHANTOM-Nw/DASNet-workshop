@@ -64,7 +64,8 @@ def visualize_dasnet_batch(
 
     model.eval()
     num_show = min(len(images), max_samples)
-    outputs = model(images[:num_show])
+    device = next(model.parameters()).device
+    outputs = model([img.to(device) for img in images[:num_show]])
     model.train()
 
     saved_paths = []
