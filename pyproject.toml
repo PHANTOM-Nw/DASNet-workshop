@@ -22,6 +22,15 @@ dependencies = [
 [tool.uv]
 # Place for uv-specific config (e.g. index-url, dev deps) later.
 
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
+
 [tool.setuptools.packages.find]
 include = ["dasnet*"]
 exclude = ["das-dataloader*", "scripts*", "docs*"]
