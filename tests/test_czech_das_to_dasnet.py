@@ -35,3 +35,28 @@ def test_json_axis_convention_matches_npy():
         )
         assert 0 <= cx.min() and cx.max() < n_ch
         assert 0 <= cy.min() and cy.max() < n_tw
+
+
+import h5py
+from scripts.czech_das_to_dasnet import (
+    decimate_and_rewrite_h5,
+    DECIMATE, DT_S_OUT, OUT_DSET_NAME, RAW_DSET_PATH,
+)
+
+
+def test_decimate_and_rewrite_h5_shapes_and_attrs(tmp_path):
+    src = SAMPLE.with_suffix(".h5")
+    dst = tmp_path / "out.h5"
+
+    decimate_and_rewrite_h5(src, dst)
+
+    with h5py.File(src, "r") as f_src, h5py.File(dst, "r") as f_dst:
+        nt_raw, nch = f_src[RAW_DSET_PATH].shape
+        dset = f_dst[OUT_DSET_NAME]
+        assert dset.shape[0] == nch, "axis 0 must be channels"
+        expected_nt = -(-nt_raw // DECIMATE)
+        assert abs(dset.shape[1] - expected_nt) <= 1
+        assert dset.dtype == np.float32
+        assert float(dset.attrs["dt_s"]) == pytest.approx(DT_S_OUT)
+        sample = dset[dset.shape[0] // 2, :]
+        assert np.all(np.isfinite(sample))
