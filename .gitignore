@@ -14,7 +14,6 @@
 **/*.npz
 **/*.txt
 **/*.gif
-*.lock
 #claude
 CLAUDE.md
 .claude/
