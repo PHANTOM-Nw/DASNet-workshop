@@ -4,98 +4,21 @@ Mask R-CNN for DAS (Distributed Acoustic Sensing) event detection on HDF5 wavefo
 
 See `CLAUDE.md` for architecture, data conventions, and gotchas.
 
-## Training on the Czech DAS dataset
+## Data preparation
 
-### One-time setup
+### 9-class COCO (original)
 
-Log in to WandB (once per machine — API key from https://wandb.ai/authorize):
+Czech raw → DASNet-ready conversion (idempotent, h5 are skipped on re-run):
 
-```bash
-uv run wandb login
-```
-
-`wandb` is already in `pyproject.toml` — no extra `pip install` needed.
-
-### Launch full training
-
-**Must use `--batch-size 1`**: DASNet's `roi_heads.expand_features`
-pads each sample in the batch by a per-sample scale, so samples in
-the same batch end up with different spatial sizes and `torch.cat`
-crashes. Use `--accumulation-steps` to simulate a larger effective
-batch.
-
-**cmd.exe:**
-```bat
-uv run python train_EC.py ^
-  --data-path e:/dasdata/DAS-dataset_dasnet/data ^
-  --anno-path e:/dasdata/DAS-dataset_dasnet/annotations/train.json ^
-  --val-data-path e:/dasdata/DAS-dataset_dasnet/data ^
-  --val-anno-path e:/dasdata/DAS-dataset_dasnet/annotations/val.json ^
-  --output-dir ./output/czech_run1 ^
-  --batch-size 1 ^
-  --accumulation-steps 2 ^
-  --epochs 80 ^
-  --workers 4 ^
-  --wandb --wandb-project DASNet --wandb-name czech_run1
-```
-
-**PowerShell** (note the backtick `` ` `` continuation — no trailing space allowed):
 ```powershell
-uv run python train_EC.py `
-  --data-path e:/dasdata/DAS-dataset_dasnet/data `
-  --anno-path e:/dasdata/DAS-dataset_dasnet/annotations/train.json `
-  --val-data-path e:/dasdata/DAS-dataset_dasnet/data `
-  --val-anno-path e:/dasdata/DAS-dataset_dasnet/annotations/val.json `
-  --output-dir ./output/czech_run1 `
-  --batch-size 1 `
-  --accumulation-steps 2 `
-  --epochs 80 `
-  --workers 4 `
-  --wandb --wandb-project DASNet --wandb-name czech_run1
+uv run python scripts/czech_das_to_dasnet.py --src-root e:/dasdata/DAS-dataset/data --out-root e:/dasdata/DAS-dataset_dasnet/data --coco-dir e:/dasdata/DAS-dataset_dasnet/annotations --workers 16
 ```
 
-Checkpoints land in `output/czech_run1/` (`checkpoint.pth`, `model_best.pth`,
-per-epoch `model_N.pth`, plus `figures/`).
-
-### Smoke test (1 epoch, no wandb)
-
-Use before any config change to verify the pipeline is healthy:
-
-```bash
-uv run python train_EC.py ^
-  --data-path e:/dasdata/DAS-dataset_dasnet/data ^
-  --anno-path e:/dasdata/DAS-dataset_dasnet/annotations/train.json ^
-  --val-data-path e:/dasdata/DAS-dataset_dasnet/data ^
-  --val-anno-path e:/dasdata/DAS-dataset_dasnet/annotations/val.json ^
-  --output-dir ./output/czech_smoke ^
-  --batch-size 1 --epochs 1 --workers 0
-```
-
-Expected:
-- `[train_EC] auto num_classes = 1 + 9 categories = 10`
-- 12/12 training steps complete, `loss_mask > 0` on at least one step
-- No `ZeroDivisionError`, no NaN/Inf
-- Checkpoints + `figures/epoch00_*.png` written
-
-### Key CLI flags (added in train_EC.py)
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `--resize-scale` | 0.5 | Spatial resize ratio before model input |
-| `--data-key` | `data` | HDF5 dataset name in each input .h5 |
-| `--no-strain-rate` | (off) | Treat input as raw strain (DASNet will diff it) |
-| `--synthetic-noise` | off | Enable noise overlay augmentation |
-| `--noise-csv` | None | Path to noise manifest (required if `--synthetic-noise`) |
-
-## Binary (event-only) variant
+### Binary COCO (event-only)
 
 With only 12 training samples across 9 classes (~1.3 per class), fine-grained
-classification is not learnable. Use the binary variant to collapse all event
-types into a single `event` class as a sanity check.
-
-### Generate binary COCO
-
-Outputs to a **separate** `annotations_bin/` directory (h5 are reused):
+classification is not learnable. Collapse all event types into a single `event`
+class. Outputs to a **separate** `annotations_bin/` directory (h5 are reused):
 
 ```powershell
 uv run python scripts/czech_das_to_dasnet_objection.py --src-root e:/dasdata/DAS-dataset/data --out-root e:/dasdata/DAS-dataset_dasnet/data --coco-dir e:/dasdata/DAS-dataset_dasnet/annotations_bin --workers 16
@@ -107,12 +30,29 @@ uv run python -c "import json; j=json.load(open('e:/dasdata/DAS-dataset_dasnet/a
 ```
 Expected: `cats: [{'id': 1, 'name': 'event'}]` and `sample cat_id: 1`.
 
-### Launch binary training
+## Training on the Czech DAS dataset
 
-Startup should log `[train_EC] auto num_classes = 1 + 1 categories = 2`.
+### One-time setup
+
+Log in to WandB (once per machine — API key from https://wandb.ai/authorize):
+
+```powershell
+uv run wandb login
+```
+
+`wandb` is already in `pyproject.toml` — no extra install needed.
+
+### Launch binary training (recommended)
+
+**Must use `--batch-size 1`**: DASNet's `roi_heads.expand_features`
+pads each sample in the batch by a per-sample scale, so samples in
+the same batch end up with different spatial sizes and `torch.cat`
+crashes. Use `--accumulation-steps` to simulate a larger effective batch.
 
 `--clip-value 1.0` prevents `inf` in `loss_rpn_box_reg` caused by the
 extreme anchor aspect ratios (5–333) when regression targets are large.
+
+Startup should log `[train_EC] auto num_classes = 1 + 1 categories = 2`.
 
 ```powershell
 uv run python train_EC.py `
@@ -129,10 +69,25 @@ uv run python train_EC.py `
   --wandb --wandb-project DASNet --wandb-name czech_run_bin_v3
 ```
 
-## Inference / debug
+Checkpoints land in the output dir (`checkpoint.pth`, `model_best.pth`,
+per-epoch `model_N.pth`, plus `figures/`).
 
-Run a trained checkpoint on the val set, dump per-sample score distributions,
-and save GT vs Pred side-by-side plots:
+### Key CLI flags (added in train_EC.py)
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--resize-scale` | 0.5 | Spatial resize ratio before model input |
+| `--data-key` | `data` | HDF5 dataset name in each input .h5 |
+| `--no-strain-rate` | (off) | Treat input as raw strain (DASNet will diff it) |
+| `--synthetic-noise` | off | Enable noise overlay augmentation |
+| `--noise-csv` | None | Path to noise manifest (required if `--synthetic-noise`) |
+| `--clip-value` | None | Gradient clipping value (recommended: 1.0) |
+| `--accumulation-steps` | 1 | Gradient accumulation steps (simulates larger batch) |
+
+## Inference
+
+Run a trained checkpoint, dump per-sample bbox/mask IoU and score distributions,
+save 3-panel GT vs Pred visualizations:
 
 ```powershell
 uv run python scripts/predict_best_czech.py `
@@ -145,14 +100,23 @@ uv run python scripts/predict_best_czech.py `
   --max-samples 4
 ```
 
-## Data preparation
+## Conversion diagnostics
 
-Czech raw → DASNet-ready conversion (idempotent, h5 are skipped on re-run):
+Side-by-side visualization of raw → decimated → DASTrainDataset:
 
-```bash
-uv run python scripts/czech_das_to_dasnet.py ^
-  --src-root e:/dasdata/DAS-dataset/data ^
-  --out-root e:/dasdata/DAS-dataset_dasnet/data ^
-  --coco-dir e:/dasdata/DAS-dataset_dasnet/annotations ^
-  --workers 16
+```powershell
+uv run python scripts/visualize_conversion.py `
+  --src-h5 e:/dasdata/DAS-dataset/data/car/auto_2023-04-17T124152+0100.h5 `
+  --src-json e:/dasdata/DAS-dataset/data/car/auto_2023-04-17T124152+0100.json `
+  --conv-h5 e:/dasdata/DAS-dataset_dasnet/data/car/auto_2023-04-17T124152+0100.h5 `
+  --coco e:/dasdata/DAS-dataset_dasnet/annotations_bin/train.json `
+  --out ./output/conversion_check/car_auto.png
+```
+
+## Anchor analysis
+
+Analyze the model-space bbox H/W distribution and suggest anchor ratios:
+
+```powershell
+uv run python scripts/analyze_bbox_shapes.py --coco e:/dasdata/DAS-dataset_dasnet/annotations_bin/train.json
 ```
