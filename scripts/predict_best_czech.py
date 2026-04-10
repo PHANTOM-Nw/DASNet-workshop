@@ -117,8 +117,38 @@ def main():
             print(f"  IoU summary: min={best_iou_per_gt.min():.4f} "
                   f"max={best_iou_per_gt.max():.4f} "
                   f"mean={best_iou_per_gt.mean():.4f}")
-            print(f"  GT with IoU > 0.3: {(best_iou_per_gt > 0.3).sum()}/{len(best_iou_per_gt)}")
-            print(f"  GT with IoU > 0.5: {(best_iou_per_gt > 0.5).sum()}/{len(best_iou_per_gt)}")
+            print(f"  GT with bbox IoU > 0.3: {(best_iou_per_gt > 0.3).sum()}/{len(best_iou_per_gt)}")
+            print(f"  GT with bbox IoU > 0.5: {(best_iou_per_gt > 0.5).sum()}/{len(best_iou_per_gt)}")
+
+            # Mask IoU: compare pred mask (sigmoid prob > 0.5) vs GT mask (binary)
+            gt_masks_t = target.get("masks", None)
+            pred_masks_t = pred.get("masks", None)
+            if gt_masks_t is not None and pred_masks_t is not None:
+                gt_masks_np = gt_masks_t.detach().cpu().numpy()   # (N_gt, H, W)
+                pm_np = pred_masks_t.detach().cpu().numpy()       # (N_pred, 1, H, W)
+                print(f"  --- Mask IoU per GT (best bbox-matched pred) ---")
+                mask_ious = []
+                for g in range(len(best_iou_per_gt)):
+                    p = best_pred_per_gt[g]
+                    gt_m = (gt_masks_np[g] > 0.5).astype(np.float32)
+                    pr_m = (np.squeeze(pm_np[p]) > 0.5).astype(np.float32)
+                    # Resize pred mask to GT mask shape if different
+                    if pr_m.shape != gt_m.shape:
+                        from PIL import Image as PILImage
+                        pr_m = np.array(PILImage.fromarray(pr_m).resize(
+                            (gt_m.shape[1], gt_m.shape[0]),
+                            PILImage.NEAREST
+                        )).astype(np.float32)
+                    inter = (gt_m * pr_m).sum()
+                    union = ((gt_m + pr_m) > 0).sum()
+                    miou = float(inter / union) if union > 0 else 0.0
+                    mask_ious.append(miou)
+                    print(f"    GT {g}: mask IoU={miou:.4f} (pred #{p})")
+                mask_ious = np.array(mask_ious)
+                print(f"  Mask IoU summary: min={mask_ious.min():.4f} "
+                      f"max={mask_ious.max():.4f} mean={mask_ious.mean():.4f}")
+                print(f"  GT with mask IoU > 0.3: {(mask_ious > 0.3).sum()}/{len(mask_ious)}")
+                print(f"  GT with mask IoU > 0.5: {(mask_ious > 0.5).sum()}/{len(mask_ious)}")
 
         img = image.detach().cpu().permute(1, 2, 0).numpy()
         H, W, _ = img.shape
