@@ -89,8 +89,10 @@ def main():
         scores = pred["scores"].detach().cpu().numpy()
         labels = pred["labels"].detach().cpu().numpy()
 
+        gt_boxes_t = target["boxes"].detach().cpu()
+
         print(f"\n=== sample {i} ===")
-        print(f"  gt boxes: {target['boxes'].shape[0]}")
+        print(f"  gt boxes: {gt_boxes_t.shape[0]}")
         print(f"  pred count: {len(scores)}")
         if len(scores) > 0:
             print(f"  score stats: min={scores.min():.3f} max={scores.max():.3f} "
@@ -99,14 +101,34 @@ def main():
             print(f"  scores > 0.2: {(scores > 0.2).sum()}")
             print(f"  scores > 0.05: {(scores > 0.05).sum()}")
 
+        # IoU analysis
+        if len(scores) > 0 and gt_boxes_t.shape[0] > 0:
+            from torchvision.ops import box_iou
+            pred_boxes_t = torch.tensor(boxes)
+            iou_matrix = box_iou(pred_boxes_t, gt_boxes_t).numpy()  # (N_pred, N_gt)
+            # For each GT, find best matching pred
+            best_iou_per_gt = iou_matrix.max(axis=0)  # (N_gt,)
+            best_pred_per_gt = iou_matrix.argmax(axis=0)
+            print(f"  --- IoU per GT box (best matching pred) ---")
+            for g in range(len(best_iou_per_gt)):
+                p = best_pred_per_gt[g]
+                print(f"    GT {g}: best IoU={best_iou_per_gt[g]:.4f} "
+                      f"(pred #{p}, score={scores[p]:.3f})")
+            print(f"  IoU summary: min={best_iou_per_gt.min():.4f} "
+                  f"max={best_iou_per_gt.max():.4f} "
+                  f"mean={best_iou_per_gt.mean():.4f}")
+            print(f"  GT with IoU > 0.3: {(best_iou_per_gt > 0.3).sum()}/{len(best_iou_per_gt)}")
+            print(f"  GT with IoU > 0.5: {(best_iou_per_gt > 0.5).sum()}/{len(best_iou_per_gt)}")
+
         img = image.detach().cpu().permute(1, 2, 0).numpy()
         H, W, _ = img.shape
         extent = (0, W * dt, 0, H * dx / 1e3)
 
-        fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+        # 3 panels: GT (box+mask), Pred bbox, Pred mask
+        fig, axes = plt.subplots(1, 3, figsize=(24, 8))
         base = np.mean(img, axis=2)
         vstd = np.std(base) * 2 + 1e-12
-        for ax, title in zip(axes, ["GT", f"Pred (>{args.score_thresh})"]):
+        for ax, title in zip(axes, ["GT (box+mask)", f"Pred bbox (>{args.score_thresh})", "Pred mask"]):
             ax.imshow(base - np.mean(base), cmap="seismic",
                       vmin=-vstd, vmax=vstd, extent=extent,
                       aspect="auto", origin="lower")
@@ -114,8 +136,19 @@ def main():
             ax.set_xlabel("Time (s)")
             ax.set_ylabel("Distance (km)")
 
+        # --- GT panel: boxes + masks ---
         gt_boxes = target["boxes"].detach().cpu().numpy()
         gt_labels = target["labels"].detach().cpu().numpy()
+        gt_masks = target.get("masks", None)
+        if gt_masks is not None:
+            gt_masks_np = gt_masks.detach().cpu().numpy()
+            combined_gt = np.zeros((H, W), dtype=np.float32)
+            for m in gt_masks_np:
+                combined_gt = np.maximum(combined_gt, m.astype(np.float32))
+            rgba = np.zeros((H, W, 4), dtype=np.float32)
+            rgba[..., 1] = 1.0  # green
+            rgba[..., 3] = combined_gt * 0.4
+            axes[0].imshow(rgba, extent=extent, aspect="auto", origin="lower")
         for b, lbl in zip(gt_boxes, gt_labels):
             x1, y1, x2, y2 = b
             rect = patches.Rectangle(
@@ -126,7 +159,9 @@ def main():
             axes[0].text(x1 * dt, y2 * dx / 1e3, f"GT:{int(lbl)}",
                          color="lime", fontsize=8, weight="bold")
 
-        for b, s, lbl in zip(boxes, scores, labels):
+        # --- Pred bbox panel ---
+        pred_masks = pred.get("masks", None)
+        for j, (b, s, lbl) in enumerate(zip(boxes, scores, labels)):
             if s < args.score_thresh:
                 continue
             x1, y1, x2, y2 = b
@@ -138,6 +173,37 @@ def main():
             axes[1].text(x1 * dt, y2 * dx / 1e3,
                          f"P:{int(lbl)}({s:.2f})",
                          color="red", fontsize=7, weight="bold")
+
+        # --- Pred mask panel: top-K by score ---
+        if pred_masks is not None:
+            pmasks = pred_masks.detach().cpu().numpy()
+            top_k = min(10, len(scores))
+            top_idx = np.argsort(scores)[::-1][:top_k]
+            combined_pred = np.zeros((H, W), dtype=np.float32)
+            for j in top_idx:
+                if scores[j] < args.score_thresh:
+                    continue
+                m = np.squeeze(pmasks[j])
+                m = np.clip(m, 0, 1)
+                combined_pred = np.maximum(combined_pred, m * scores[j])
+            if combined_pred.max() > 0:
+                combined_pred /= combined_pred.max()
+            rgba = plt.get_cmap("hot")(combined_pred)
+            rgba[..., 3] = np.where(combined_pred > 0.1, 0.5, 0.0)
+            axes[2].imshow(rgba, extent=extent, aspect="auto", origin="lower")
+            # also draw top-K boxes on mask panel
+            for j in top_idx:
+                if scores[j] < args.score_thresh:
+                    continue
+                x1, y1, x2, y2 = boxes[j]
+                rect = patches.Rectangle(
+                    (x1 * dt, y1 * dx / 1e3),
+                    (x2 - x1) * dt, (y2 - y1) * dx / 1e3,
+                    linewidth=0.8, edgecolor="yellow", facecolor="none")
+                axes[2].add_patch(rect)
+                axes[2].text(x1 * dt, y2 * dx / 1e3,
+                             f"{scores[j]:.2f}",
+                             color="yellow", fontsize=6)
 
         out_path = os.path.join(args.out_dir, f"sample_{i:02d}.png")
         fig.tight_layout()

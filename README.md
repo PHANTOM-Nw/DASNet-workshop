@@ -111,18 +111,22 @@ Expected: `cats: [{'id': 1, 'name': 'event'}]` and `sample cat_id: 1`.
 
 Startup should log `[train_EC] auto num_classes = 1 + 1 categories = 2`.
 
+`--clip-value 1.0` prevents `inf` in `loss_rpn_box_reg` caused by the
+extreme anchor aspect ratios (5–333) when regression targets are large.
+
 ```powershell
 uv run python train_EC.py `
   --data-path e:/dasdata/DAS-dataset_dasnet/data `
   --anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/train.json `
   --val-data-path e:/dasdata/DAS-dataset_dasnet/data `
   --val-anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/val.json `
-  --output-dir ./output/czech_run_bin_v2 `
+  --output-dir ./output/czech_run_bin_v3 `
   --batch-size 1 `
   --accumulation-steps 2 `
   --epochs 60 `
   --workers 4 `
-  --wandb --wandb-project DASNet --wandb-name czech_run_bin_v2
+  --clip-value 1.0 `
+  --wandb --wandb-project DASNet --wandb-name czech_run_bin_v3
 ```
 
 ## Inference / debug
@@ -132,16 +136,14 @@ and save GT vs Pred side-by-side plots:
 
 ```powershell
 uv run python scripts/predict_best_czech.py `
-  --checkpoint ./output/czech_run_bin/model_best.pth `
+  --checkpoint ./output/czech_run_bin_v3/model_best.pth `
   --data-path e:/dasdata/DAS-dataset_dasnet/data `
   --anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/val.json `
-  --out-dir ./output/czech_run_bin/inference `
+  --out-dir ./output/czech_run_bin_v3/inference `
   --num-classes 2 `
-  --score-thresh 0.05 `
+  --score-thresh 0.1 `
   --max-samples 4
 ```
-
-Use `--num-classes 10` when pointing at the 9-class run's checkpoint.
 
 ## Data preparation
 
