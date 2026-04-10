@@ -82,7 +82,13 @@ def build_model(
         # Replace with 5 log-quantile ratios covering p5..p95 so the RPN
         # actually has anchors that can match Czech bbox shapes.
         aspect_ratios = ((0.003, 0.008, 0.024, 0.067, 0.188),) * len(anchor_sizes)
-        model.rpn.anchor_generator = AnchorGenerator(sizes=anchor_sizes, aspect_ratios=aspect_ratios)
+        anchor_gen = AnchorGenerator(sizes=anchor_sizes, aspect_ratios=aspect_ratios)
+        model.rpn.anchor_generator = anchor_gen
+        # RPNHead conv layers must match the new anchor count per location
+        from torchvision.models.detection.rpn import RPNHead
+        num_anchors = anchor_gen.num_anchors_per_location()[0]
+        out_channels = model.backbone.out_channels
+        model.rpn.head = RPNHead(out_channels, num_anchors)
 
     if weights is not None:
         model.load_state_dict(weights.get_state_dict(progress=True))
