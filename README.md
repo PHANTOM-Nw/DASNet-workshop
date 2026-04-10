@@ -87,6 +87,62 @@ Expected:
 | `--synthetic-noise` | off | Enable noise overlay augmentation |
 | `--noise-csv` | None | Path to noise manifest (required if `--synthetic-noise`) |
 
+## Binary (event-only) variant
+
+With only 12 training samples across 9 classes (~1.3 per class), fine-grained
+classification is not learnable. Use the binary variant to collapse all event
+types into a single `event` class as a sanity check.
+
+### Generate binary COCO
+
+Outputs to a **separate** `annotations_bin/` directory (h5 are reused):
+
+```powershell
+uv run python scripts/czech_das_to_dasnet_objection.py --src-root e:/dasdata/DAS-dataset/data --out-root e:/dasdata/DAS-dataset_dasnet/data --coco-dir e:/dasdata/DAS-dataset_dasnet/annotations_bin --workers 16
+```
+
+Verify:
+```powershell
+uv run python -c "import json; j=json.load(open('e:/dasdata/DAS-dataset_dasnet/annotations_bin/train.json')); print('cats:', j['categories']); print('sample cat_id:', j['annotations'][0]['category_id'])"
+```
+Expected: `cats: [{'id': 1, 'name': 'event'}]` and `sample cat_id: 1`.
+
+### Launch binary training
+
+Startup should log `[train_EC] auto num_classes = 1 + 1 categories = 2`.
+
+```powershell
+uv run python train_EC.py `
+  --data-path e:/dasdata/DAS-dataset_dasnet/data `
+  --anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/train.json `
+  --val-data-path e:/dasdata/DAS-dataset_dasnet/data `
+  --val-anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/val.json `
+  --output-dir ./output/czech_run_bin `
+  --batch-size 1 `
+  --accumulation-steps 2 `
+  --epochs 80 `
+  --workers 4 `
+  --wandb --wandb-project DASNet --wandb-name czech_run_bin
+```
+
+## Inference / debug
+
+Run a trained checkpoint on the val set, dump per-sample score distributions,
+and save GT vs Pred side-by-side plots:
+
+```powershell
+uv run python scripts/predict_best_czech.py `
+  --checkpoint ./output/czech_run_bin/model_best.pth `
+  --data-path e:/dasdata/DAS-dataset_dasnet/data `
+  --anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/val.json `
+  --out-dir ./output/czech_run_bin/inference `
+  --num-classes 2 `
+  --score-thresh 0.05 `
+  --max-samples 4
+```
+
+Use `--num-classes 10` when pointing at the 9-class run's checkpoint.
+
 ## Data preparation
 
 Czech raw → DASNet-ready conversion (idempotent, h5 are skipped on re-run):

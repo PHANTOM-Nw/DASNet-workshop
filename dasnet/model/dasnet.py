@@ -76,7 +76,12 @@ def build_model(
             anchor_sizes = ((256,), (256,), (256,), (256,), (512,))
         else:
             anchor_sizes = ((512,), (512,), (512,), (512,), (512,))
-        aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
+        # Czech DAS events are extremely time-long / channel-short:
+        # bbox H/W distribution on the train set has p5=0.003, p95=0.188,
+        # with 95% of GT boxes outside the stock (0.5, 1, 2) range.
+        # Replace with 5 log-quantile ratios covering p5..p95 so the RPN
+        # actually has anchors that can match Czech bbox shapes.
+        aspect_ratios = ((0.003, 0.008, 0.024, 0.067, 0.188),) * len(anchor_sizes)
         model.rpn.anchor_generator = AnchorGenerator(sizes=anchor_sizes, aspect_ratios=aspect_ratios)
 
     if weights is not None:
