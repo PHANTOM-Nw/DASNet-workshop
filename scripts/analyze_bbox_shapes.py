@@ -11,13 +11,17 @@ def main():
     args = ap.parse_args()
 
     j = json.load(open(args.coco))
-    # bbox format: [x_time, y_channel, w_time, h_channel]
+    # bbox format in COCO: [x_time, y_channel, w_time, h_channel]
+    # In MODEL space (after das.py axis swap): x=channel, y=time
+    # so model H=time=w_time, model W=channel=h_channel
+    # torchvision aspect_ratio = model_H / model_W = w_time / h_channel
     ratios, widths, heights = [], [], []
     for a in j["annotations"]:
         x, y, w, h = a["bbox"]
-        ratios.append(h / w)
-        widths.append(w)
-        heights.append(h)
+        # model-space: H=w_time, W=h_channel
+        ratios.append(w / h)  # model H/W = time/channel
+        widths.append(h)      # model W = channel
+        heights.append(w)     # model H = time
     r = np.array(ratios)
     wt = np.array(widths)
     hc = np.array(heights)

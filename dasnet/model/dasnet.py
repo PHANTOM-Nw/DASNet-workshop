@@ -76,12 +76,13 @@ def build_model(
             anchor_sizes = ((256,), (256,), (256,), (256,), (512,))
         else:
             anchor_sizes = ((512,), (512,), (512,), (512,), (512,))
-        # Czech DAS events are extremely time-long / channel-short:
-        # bbox H/W distribution on the train set has p5=0.003, p95=0.188,
-        # with 95% of GT boxes outside the stock (0.5, 1, 2) range.
-        # Replace with 5 log-quantile ratios covering p5..p95 so the RPN
-        # actually has anchors that can match Czech bbox shapes.
-        aspect_ratios = ((0.003, 0.008, 0.024, 0.067, 0.188),) * len(anchor_sizes)
+        # Czech DAS events are time-long / channel-short.  After the axis
+        # swap in das.py (COCO x=time,y=ch → model x=ch,y=time), model-space
+        # boxes are TALL (y=time) and NARROW (x=channel).  Torchvision anchors
+        # use aspect_ratio = H/W, so we need ratios >> 1.
+        # Derived from the train-set bbox distribution (model-space H/W):
+        #   p5=5.3  p25=14.5  p50=64  p75=152  p95=333
+        aspect_ratios = ((5.3, 14.9, 41.7, 125.0, 333.0),) * len(anchor_sizes)
         anchor_gen = AnchorGenerator(sizes=anchor_sizes, aspect_ratios=aspect_ratios)
         model.rpn.anchor_generator = anchor_gen
         # RPNHead conv layers must match the new anchor count per location
