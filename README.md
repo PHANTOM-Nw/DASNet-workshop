@@ -117,12 +117,12 @@ uv run python train_EC.py `
   --anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/train.json `
   --val-data-path e:/dasdata/DAS-dataset_dasnet/data `
   --val-anno-path e:/dasdata/DAS-dataset_dasnet/annotations_bin/val.json `
-  --output-dir ./output/czech_run_bin `
+  --output-dir ./output/czech_run_bin_v2 `
   --batch-size 1 `
   --accumulation-steps 2 `
-  --epochs 80 `
+  --epochs 60 `
   --workers 4 `
-  --wandb --wandb-project DASNet --wandb-name czech_run_bin
+  --wandb --wandb-project DASNet --wandb-name czech_run_bin_v2
 ```
 
 ## Inference / debug
